@@ -1,0 +1,16 @@
+table {
+  border-collapse: collapse;
+  min-width: 260px;
+}
+
+th,
+td {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
+th {
+  background-color: #e3f2fd;
+  text-align: left;
+}
