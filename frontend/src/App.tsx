@@ -1,692 +1,196 @@
-import { useEffect, useMemo, useState } from 'react'
-import {
-  AppBar,
-  Box,
-  Button,
-  Container,
-  CssBaseline,
-  LinearProgress,
-  Tab,
-  Tabs,
-  Toolbar,
-  Typography,
-  Paper,
-  Grid,
-  TextField,
-  Alert,
-  Snackbar,
-  Chip,
-  Stack,
-  Card,
-  CardContent,
-} from '@mui/material'
-import AnalyticsIcon from '@mui/icons-material/Analytics'
+import { useEffect, useMemo, useState, useCallback } from 'react'
+import { Box, Container, LinearProgress, Typography, Alert, Snackbar, Chip, Stack, IconButton, Tooltip, Skeleton } from '@mui/material'
+import { ThemeProvider, createTheme } from '@mui/material/styles'
+import CssBaseline from '@mui/material/CssBaseline'
 import ScienceIcon from '@mui/icons-material/Science'
-import DatasetIcon from '@mui/icons-material/Dataset'
+import LightModeIcon from '@mui/icons-material/LightMode'
+import DarkModeIcon from '@mui/icons-material/DarkMode'
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline'
+import FitnessCenterIcon from '@mui/icons-material/FitnessCenter'
+import { motion, AnimatePresence } from 'framer-motion'
+import Joyride, { type Step, type CallBackProps } from 'react-joyride'
 import axios from 'axios'
+import { API, NAV as BASE_NAV, MODEL_COLORS, C, type PageKey, type FeatureMeta, type MetricsData, type DatasetStatsResponse, type FeatureImportanceResponse, type ModelInfo, type HistoryEntry } from './shared'
+import { OverviewPage } from './OverviewPage'
+import { SinglePage } from './SinglePage'
+import { BatchPage } from './BatchPage'
+import { ComparePage } from './ComparePage'
+import { InsightsPage } from './InsightsPage'
+import { ExplorerPage } from './ExplorerPage'
+import { WhatIfPage } from './WhatIfPage'
+import { TrainingPage } from './TrainingPage'
+import { Chatbot } from './Chatbot'
 import './App.css'
 
-type FeatureMeta = {
-  name: string
-  default: number
-  type: string
-}
+const NAV = [...BASE_NAV, { key: 'training' as PageKey, label: 'Training', icon: <FitnessCenterIcon fontSize="small" /> }]
 
-type MetricsResponse = {
-  accuracy: number
-  precision: number
-  recall: number
-  f1: number
-  confusionMatrix: number[][]
-  modelName: string
-  nSamples: number
-}
+const mkTheme = (mode: 'dark' | 'light') => createTheme({
+  palette: {
+    mode,
+    primary: { main: '#00d4aa' },
+    secondary: { main: '#7c3aed' },
+    ...(mode === 'dark' ? { background: { default: '#060918', paper: 'rgba(15,20,40,0.8)' }, text: { primary: '#e2e8f0', secondary: '#94a3b8' } }
+      : { background: { default: '#f0f4f8', paper: '#ffffff' }, text: { primary: '#1e293b', secondary: '#64748b' } }),
+  },
+  typography: { fontFamily: '"Inter", system-ui, sans-serif', h3: { fontWeight: 800 }, h4: { fontWeight: 700 }, h5: { fontWeight: 600 }, h6: { fontWeight: 600 }, subtitle1: { fontWeight: 600 } },
+  shape: { borderRadius: 16 },
+  components: {
+    MuiPaper: { styleOverrides: { root: { backgroundImage: 'none' } } },
+    MuiButton: { styleOverrides: { contained: { background: 'linear-gradient(135deg, #00d4aa, #00b4d8)', color: '#060918', fontWeight: 700, textTransform: 'none' as const, borderRadius: '12px', boxShadow: '0 4px 20px rgba(0,212,170,0.3)' }, outlined: { borderColor: 'rgba(0,212,170,0.3)', color: '#00d4aa', textTransform: 'none' as const, borderRadius: '12px' }, text: { textTransform: 'none' as const } } },
+    MuiTextField: { styleOverrides: { root: { '& .MuiOutlinedInput-root': { borderRadius: '12px' } } } },
+    MuiLinearProgress: { styleOverrides: { root: { borderRadius: 999, height: 8 }, bar: { borderRadius: 999, background: 'linear-gradient(90deg, #00d4aa, #00b4d8)' } } },
+  },
+})
 
-type PredictionResponse = {
-  prediction: number
-  label: string
-  probabilities: {
-    benign: number
-    malignant: number
-  }
-  modelName: string
-}
+const TOUR_STEPS: Step[] = [
+  { target: '.sidebar-nav', content: 'Navigate between pages using the sidebar. Each page offers a unique perspective on the data.', placement: 'right', disableBeacon: true },
+  { target: '#nav-single', content: 'Make predictions with any model. Try the "All Models" button for consensus from all 3 models simultaneously.', placement: 'right' },
+  { target: '#nav-compare', content: 'Compare all models with ROC curves, cross-validation scores, and confusion matrices side by side.', placement: 'right' },
+  { target: '#nav-explorer', content: 'Explore the dataset with scatter plots, histograms, PCA visualization, and a correlation heatmap.', placement: 'right' },
+  { target: '#nav-whatif', content: 'What-If Analysis: drag sliders and watch predictions change in real-time with SHAP explanations.', placement: 'right' },
+  { target: '#nav-training', content: 'Retrain models with custom hyperparameters and compare training vs test performance.', placement: 'right' },
+  { target: '#theme-toggle', content: 'Switch between dark and light mode. Your preference is remembered.', placement: 'top' },
+]
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
-
-type PageKey = 'overview' | 'single' | 'batch' | 'insights'
+type Toast = { id: number; message: string; severity: 'success' | 'info' | 'warning' | 'error' }
 
 function App() {
+  const [mode, setMode] = useState<'dark' | 'light'>(() => (localStorage.getItem('theme') as 'dark' | 'light') || 'dark')
   const [page, setPage] = useState<PageKey>('overview')
   const [features, setFeatures] = useState<FeatureMeta[]>([])
-  const [loadingMeta, setLoadingMeta] = useState(false)
-  const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
-  const [loadingMetrics, setLoadingMetrics] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [loadingMeta, setLoadingMeta] = useState(true)
+  const [metrics, setMetrics] = useState<MetricsData | null>(null)
+  const [loadingMetrics, setLoadingMetrics] = useState(true)
+  const [datasetStats, setDatasetStats] = useState<DatasetStatsResponse | null>(null)
+  const [featureImps, setFeatureImps] = useState<FeatureImportanceResponse | null>(null)
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
+  const [compareData, setCompareData] = useState<MetricsData[]>([])
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const [runTour, setRunTour] = useState(false)
+
+  const theme = useMemo(() => mkTheme(mode), [mode])
+  const toggleMode = () => { const n = mode === 'dark' ? 'light' : 'dark'; setMode(n); localStorage.setItem('theme', n) }
+  const isDark = mode === 'dark'
+
+  const addToast = useCallback((message: string, severity: Toast['severity'] = 'info') => {
+    setToasts(prev => [...prev, { id: Date.now(), message, severity }])
+  }, [])
+  const removeToast = (id: number) => setToasts(prev => prev.filter(t => t.id !== id))
+
+  useEffect(() => { if (!localStorage.getItem('tourDone2')) { setTimeout(() => setRunTour(true), 1500) } }, [])
+  const handleTourCallback = (data: CallBackProps) => { if (data.status === 'finished' || data.status === 'skipped') { setRunTour(false); localStorage.setItem('tourDone2', '1') } }
+
+  const addHistory = useCallback((entry: Omit<HistoryEntry, 'id' | 'time'>) => {
+    setHistory(prev => [{ ...entry, id: Date.now(), time: new Date().toLocaleTimeString() }, ...prev].slice(0, 20))
+    addToast(`Prediction: ${entry.label} (${entry.confidence}% confidence)`, entry.label === 'Malignant' ? 'warning' : 'success')
+  }, [addToast])
 
   useEffect(() => {
-    const fetchMeta = async () => {
-      try {
-        setLoadingMeta(true)
-        const res = await axios.get<{ features: FeatureMeta[] }>(
-          `${API_BASE_URL}/api/feature-metadata`,
-        )
-        setFeatures(res.data.features)
-      } catch (e: any) {
-        setError(e?.message || 'Failed to load feature metadata.')
-      } finally {
-        setLoadingMeta(false)
-      }
-    }
-    fetchMeta()
+    const go = async () => {
+      setLoadingMeta(true); setLoadingMetrics(true)
+      const [m, met, st, imp, mod, cmp] = await Promise.allSettled([
+        axios.get(`${API}/api/feature-metadata`), axios.get(`${API}/api/metrics`),
+        axios.get(`${API}/api/dataset-stats`), axios.get(`${API}/api/feature-importance`),
+        axios.get(`${API}/api/models`), axios.get(`${API}/api/compare-models`),
+      ])
+      if (m.status === 'fulfilled') setFeatures(m.value.data.features)
+      if (met.status === 'fulfilled') setMetrics(met.value.data)
+      if (st.status === 'fulfilled') setDatasetStats(st.value.data)
+      if (imp.status === 'fulfilled') setFeatureImps(imp.value.data)
+      if (mod.status === 'fulfilled') setAvailableModels(mod.value.data.models)
+      if (cmp.status === 'fulfilled') setCompareData(cmp.value.data.models)
+      setLoadingMeta(false); setLoadingMetrics(false)
+    }; go()
   }, [])
 
-  useEffect(() => {
-    const fetchMetrics = async () => {
-      try {
-        setLoadingMetrics(true)
-        const res = await axios.get<MetricsResponse>(
-          `${API_BASE_URL}/api/metrics`,
-        )
-        setMetrics(res.data)
-      } catch {
-        // metrics are nice-to-have; don't block the UI
-      } finally {
-        setLoadingMetrics(false)
-      }
-    }
-    fetchMetrics()
-  }, [])
-
-  const handleChangePage = (_: React.SyntheticEvent, value: PageKey) => {
-    setPage(value)
-  }
+  const pageVariants = { initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' } }, exit: { opacity: 0, y: -15, transition: { duration: 0.2 } } }
+  const borderColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.08)'
+  const sidebarBg = isDark ? 'rgba(10,14,30,0.95)' : 'rgba(255,255,255,0.97)'
 
   const content = useMemo(() => {
-    if (page === 'single') {
-      return (
-        <SinglePredictionPage
-          features={features}
-          loadingMeta={loadingMeta}
-          onError={setError}
-        />
-      )
+    switch (page) {
+      case 'single': return <SinglePage features={features} loadingMeta={loadingMeta} onError={(e) => addToast(e || 'Error', 'error')} models={availableModels} addHistory={addHistory} addToast={addToast} />
+      case 'batch': return <BatchPage onError={(e) => addToast(e || 'Error', 'error')} models={availableModels} addToast={addToast} />
+      case 'compare': return <ComparePage data={compareData} loading={loadingMetrics} />
+      case 'insights': return <InsightsPage metrics={metrics} loading={loadingMetrics} featureImps={featureImps} models={availableModels} />
+      case 'explorer': return <ExplorerPage features={features} />
+      case 'whatif': return <WhatIfPage features={features} models={availableModels} />
+      case 'training' as PageKey: return <TrainingPage models={availableModels} addToast={addToast} />
+      default: return <OverviewPage metrics={metrics} loadingMetrics={loadingMetrics} datasetStats={datasetStats} featureImps={featureImps} history={history} />
     }
-    if (page === 'batch') {
-      return <BatchPredictionPage onError={setError} />
-    }
-    if (page === 'insights') {
-      return (
-        <InsightsPage
-          metrics={metrics}
-          loading={loadingMetrics}
-        />
-      )
-    }
-    return (
-      <OverviewPage
-        metrics={metrics}
-        loadingMetrics={loadingMetrics}
-      />
-    )
-  }, [page, features, loadingMeta, metrics, loadingMetrics])
+  }, [page, features, loadingMeta, metrics, loadingMetrics, datasetStats, featureImps, availableModels, compareData, history, addHistory, addToast])
+
+  // Skeleton for loading state
+  const LoadingSkeleton = () => (
+    <Box sx={{ p: 3 }}>
+      <Skeleton variant="text" width="40%" height={40} sx={{ mb: 2, bgcolor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)' }} />
+      <Stack direction="row" spacing={2} sx={{ mb: 3 }}>{[1, 2, 3, 4].map(i => <Skeleton key={i} variant="rounded" width="25%" height={100} sx={{ borderRadius: '16px', bgcolor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)' }} />)}</Stack>
+      <Stack direction="row" spacing={2}><Skeleton variant="rounded" width="40%" height={240} sx={{ borderRadius: '20px', bgcolor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)' }} /><Skeleton variant="rounded" width="60%" height={240} sx={{ borderRadius: '20px', bgcolor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)' }} /></Stack>
+    </Box>
+  )
 
   return (
-    <>
+    <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Box
-        sx={{
-          minHeight: '100vh',
-          background: 'linear-gradient(135deg, #e3f2fd 0%, #e0f7fa 50%, #f3e5f5 100%)',
-        }}
-      >
-        <AppBar
-          position="static"
-          elevation={0}
-          sx={{
-            background: 'rgba(13, 71, 161, 0.95)',
-            backdropFilter: 'blur(8px)',
-          }}
-        >
-          <Toolbar>
-            <ScienceIcon sx={{ mr: 1 }} />
-            <Typography variant="h6" sx={{ flexGrow: 1, fontWeight: 600 }}>
-              Breast Cancer AI Studio
-            </Typography>
-            <Typography variant="body2" sx={{ opacity: 0.8 }}>
-              React · Flask · ML
-            </Typography>
-          </Toolbar>
-        </AppBar>
-
-        <Container maxWidth="lg" sx={{ py: 4 }}>
-          <Paper
-            elevation={3}
-            sx={{
-              borderRadius: 4,
-              overflow: 'hidden',
-            }}
-          >
-            <Box
-              sx={{
-                px: 3,
-                pt: 2,
-                borderBottom: 1,
-                borderColor: 'divider',
-                background:
-                  'linear-gradient(90deg, rgba(227,242,253,0.9), rgba(232,245,233,0.9))',
-              }}
-            >
-              <Tabs
-                value={page}
-                onChange={handleChangePage}
-                textColor="primary"
-                indicatorColor="primary"
-                variant="scrollable"
-                scrollButtons="auto"
-              >
-                <Tab label="Overview" value="overview" />
-                <Tab label="Single Prediction" value="single" />
-                <Tab label="Batch Prediction" value="batch" />
-                <Tab label="Model Insights" value="insights" />
-              </Tabs>
+      <Joyride steps={TOUR_STEPS} run={runTour} continuous showSkipButton showProgress callback={handleTourCallback}
+        styles={{
+          options: { primaryColor: '#00d4aa', backgroundColor: isDark ? '#0f1428' : '#fff', textColor: isDark ? '#e2e8f0' : '#1e293b', arrowColor: isDark ? '#0f1428' : '#fff', overlayColor: 'rgba(0,0,0,0.75)' },
+          tooltip: { borderRadius: 16, padding: 20 }, buttonNext: { borderRadius: 10, fontWeight: 700 }, buttonSkip: { color: '#94a3b8' }
+        }} />
+      <Box sx={{ minHeight: '100vh', background: isDark ? '#060918' : '#f0f4f8', display: 'flex' }}>
+        {/* Sidebar */}
+        <Box className="sidebar-nav" sx={{
+          width: { xs: '100%', md: 240 }, position: { xs: 'fixed', md: 'sticky' },
+          bottom: { xs: 0, md: 'auto' }, top: { md: 0 }, height: { md: '100vh' }, zIndex: 100,
+          display: 'flex', flexDirection: { xs: 'row', md: 'column' },
+          background: sidebarBg, backdropFilter: 'blur(20px)',
+          borderRight: { md: `1px solid ${borderColor}` }, borderTop: { xs: `1px solid ${borderColor}`, md: 'none' },
+          p: { xs: 1, md: 3 }, gap: { xs: 0.5, md: 0.5 },
+          boxShadow: isDark ? 'none' : '4px 0 20px rgba(0,0,0,0.04)',
+        }}>
+          <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 1.5, mb: 3, px: 1 }}>
+            <Box sx={{ width: 36, height: 36, borderRadius: '10px', background: 'linear-gradient(135deg, #00d4aa, #00b4d8)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <ScienceIcon sx={{ color: '#060918', fontSize: 20 }} />
             </Box>
-
-            {loadingMeta && <LinearProgress />}
-
-            <Box sx={{ p: 3 }}>{content}</Box>
-          </Paper>
-        </Container>
-      </Box>
-
-      <Snackbar
-        open={Boolean(error)}
-        autoHideDuration={6000}
-        onClose={() => setError(null)}
-      >
-        <Alert
-          severity="error"
-          onClose={() => setError(null)}
-          sx={{ width: '100%' }}
-        >
-          {error}
-        </Alert>
-      </Snackbar>
-    </>
-  )
-}
-
-type SinglePredictionPageProps = {
-  features: FeatureMeta[]
-  loadingMeta: boolean
-  onError: (msg: string | null) => void
-}
-
-function SinglePredictionPage({
-  features,
-  loadingMeta,
-  onError,
-}: SinglePredictionPageProps) {
-  const [values, setValues] = useState<Record<string, string>>({})
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<PredictionResponse | null>(null)
-
-  useEffect(() => {
-    if (features.length) {
-      const initial: Record<string, string> = {}
-      features.forEach((f) => {
-        initial[f.name] = String(Number(f.default.toFixed(3)))
-      })
-      setValues(initial)
-    }
-  }, [features])
-
-  const handleChange = (name: string, value: string) => {
-    setValues((prev) => ({ ...prev, [name]: value }))
-  }
-
-  const handleSubmit = async () => {
-    setLoading(true)
-    setResult(null)
-    try {
-      const numeric: Record<string, number> = {}
-      for (const f of features) {
-        const raw = values[f.name]
-        const parsed = Number(raw)
-        if (Number.isNaN(parsed)) {
-          throw new Error(`Invalid value for ${f.name}`)
-        }
-        numeric[f.name] = parsed
-      }
-
-      const res = await axios.post<PredictionResponse>(
-        `${API_BASE_URL}/api/predict`,
-        {
-          features: numeric,
-        },
-      )
-      setResult(res.data)
-    } catch (e: any) {
-      const msg = e?.response?.data?.error || e?.message || 'Prediction failed.'
-      onError(msg)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const riskColor =
-    result?.label === 'Malignant' ? 'error' : result?.label === 'Benign' ? 'success' : 'default'
-
-  return (
-    <Grid container spacing={3}>
-      <Grid item xs={12} md={7}>
-        <Typography variant="h5" gutterBottom fontWeight={600}>
-          Patient Features
-        </Typography>
-        <Typography variant="body2" color="text.secondary" gutterBottom>
-          Adjust the measurements below to match the patient. Values start from dataset means.
-        </Typography>
-        <Box
-          sx={{
-            maxHeight: 520,
-            overflowY: 'auto',
-            pr: 1,
-          }}
-        >
-          <Grid container spacing={2}>
-            {features.map((f) => (
-              <Grid item xs={12} sm={6} md={4} key={f.name}>
-                <TextField
-                  fullWidth
-                  size="small"
-                  label={f.name}
-                  value={values[f.name] || ''}
-                  type="number"
-                  onChange={(e) => handleChange(f.name, e.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-            ))}
-          </Grid>
-        </Box>
-        <Box mt={3}>
-          <Button
-            variant="contained"
-            size="large"
-            onClick={handleSubmit}
-            disabled={loading || loadingMeta || !features.length}
-          >
-            {loading ? 'Predicting…' : 'Predict'}
-          </Button>
-        </Box>
-      </Grid>
-
-      <Grid item xs={12} md={5}>
-        <Typography variant="h5" gutterBottom fontWeight={600}>
-          Result
-        </Typography>
-        <Card
-          elevation={4}
-          sx={{
-            borderRadius: 3,
-            background:
-              result?.label === 'Malignant'
-                ? 'linear-gradient(135deg, #ffebee, #ffcdd2)'
-                : result?.label === 'Benign'
-                  ? 'linear-gradient(135deg, #e8f5e9, #c8e6c9)'
-                  : 'linear-gradient(135deg, #e3f2fd, #bbdefb)',
-          }}
-        >
-          <CardContent>
-            {result ? (
-              <>
-                <Stack direction="row" spacing={1} alignItems="center" mb={1}>
-                  <AnalyticsIcon color={riskColor === 'error' ? 'error' : 'primary'} />
-                  <Typography variant="h6" fontWeight={700}>
-                    {result.label}
-                  </Typography>
-                </Stack>
-                <Typography variant="body2" color="text.secondary" gutterBottom>
-                  Model: {result.modelName}
-                </Typography>
-                <Box mt={2}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Confidence
-                  </Typography>
-                  <Stack direction="row" spacing={1} flexWrap="wrap">
-                    <Chip
-                      label={`Benign: ${(result.probabilities.benign * 100).toFixed(1)}%`}
-                      color="success"
-                      variant={
-                        result.label === 'Benign' ? 'filled' : 'outlined'
-                      }
-                    />
-                    <Chip
-                      label={`Malignant: ${(result.probabilities.malignant * 100).toFixed(1)}%`}
-                      color="error"
-                      variant={
-                        result.label === 'Malignant' ? 'filled' : 'outlined'
-                      }
-                    />
-                  </Stack>
-                </Box>
-              </>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                Run a prediction to see the AI&apos;s assessment.
-              </Typography>
-            )}
-          </CardContent>
-        </Card>
-
-        <Box mt={3}>
-          <Typography variant="subtitle2" gutterBottom>
-            Clinical Disclaimer
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            This tool is for educational and exploratory purposes only and is
-            not a substitute for professional medical diagnosis or treatment.
-          </Typography>
-        </Box>
-      </Grid>
-    </Grid>
-  )
-}
-
-type BatchPredictionPageProps = {
-  onError: (msg: string | null) => void
-}
-
-function BatchPredictionPage({ onError }: BatchPredictionPageProps) {
-  const [fileName, setFileName] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [results, setResults] = useState<
-    { index: number; label: string; prediction: number }[]
-  >([])
-
-  const handleFileChange = async (
-    event: React.ChangeEvent<HTMLInputElement>,
-  ) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    setFileName(file.name)
-    setLoading(true)
-    setResults([])
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await axios.post<{ results: any[] }>(
-        `${API_BASE_URL}/api/predict-batch`,
-        formData,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        },
-      )
-      setResults(
-        res.data.results.map((r) => ({
-          index: r.index,
-          label: r.label,
-          prediction: r.prediction,
-        })),
-      )
-    } catch (e: any) {
-      const msg = e?.response?.data?.error || e?.message || 'Batch prediction failed.'
-      onError(msg)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <Box>
-      <Typography variant="h5" gutterBottom fontWeight={600}>
-        Batch Prediction
-      </Typography>
-      <Typography variant="body2" color="text.secondary" gutterBottom>
-        Upload a CSV file with the same feature columns as the training dataset
-        (without the diagnosis column). The API will return a label for each row.
-      </Typography>
-
-      <Box mt={3}>
-        <Button
-          variant="outlined"
-          component="label"
-          startIcon={<DatasetIcon />}
-          disabled={loading}
-        >
-          {fileName ? 'Change file' : 'Choose CSV file'}
-          <input
-            type="file"
-            hidden
-            accept=".csv,text/csv"
-            onChange={handleFileChange}
-          />
-        </Button>
-        {fileName && (
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ mt: 1 }}
-          >
-            Selected: {fileName}
-          </Typography>
-        )}
-      </Box>
-
-      <Box mt={4}>
-        {loading ? (
-          <LinearProgress />
-        ) : results.length ? (
-          <Box>
-            <Typography variant="subtitle1" gutterBottom>
-              Predictions
-            </Typography>
-            <Stack spacing={1}>
-              {results.map((r) => (
-                <Paper
-                  key={r.index}
-                  variant="outlined"
-                  sx={{
-                    p: 1.5,
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                  }}
-                >
-                  <Typography variant="body2">
-                    Row {r.index + 1}
-                  </Typography>
-                  <Chip
-                    label={r.label}
-                    color={r.label === 'Malignant' ? 'error' : 'success'}
-                    size="small"
-                  />
-                </Paper>
-              ))}
+            <Box><Typography variant="subtitle1" sx={{ fontWeight: 800, color: 'text.primary', lineHeight: 1.2, fontSize: '0.75rem' }}>Breast Cancer AI</Typography><Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.55rem' }}>Multi-Model Studio</Typography></Box>
+          </Box>
+          {NAV.map(n => <button key={n.key} id={`nav-${n.key}`} className={`nav-tab ${page === n.key ? 'active' : ''} ${isDark ? '' : 'light'}`} onClick={() => setPage(n.key as PageKey)}>{n.icon}<span>{n.label}</span></button>)}
+          <Box sx={{ mt: 'auto', display: { xs: 'none', md: 'flex' }, flexDirection: 'column', gap: 1, px: 1, pt: 2 }}>
+            <Stack direction="row" spacing={1} alignItems="center"><span className="glow-dot success" /><Typography variant="caption" sx={{ color: 'text.secondary' }}>{availableModels.length} models</Typography></Stack>
+            <Stack direction="row" spacing={0.5}>
+              <Tooltip title="Toggle theme"><IconButton id="theme-toggle" size="small" onClick={toggleMode} sx={{ color: 'text.secondary' }}>{isDark ? <LightModeIcon fontSize="small" /> : <DarkModeIcon fontSize="small" />}</IconButton></Tooltip>
+              <Tooltip title="Tour"><IconButton size="small" onClick={() => setRunTour(true)} sx={{ color: 'text.secondary' }}><HelpOutlineIcon fontSize="small" /></IconButton></Tooltip>
             </Stack>
           </Box>
-        ) : (
-          <Typography variant="body2" color="text.secondary">
-            No predictions yet. Upload a CSV file to see results.
-          </Typography>
-        )}
-      </Box>
-    </Box>
-  )
-}
-
-type OverviewPageProps = {
-  metrics: MetricsResponse | null
-  loadingMetrics: boolean
-}
-
-function OverviewPage({ metrics, loadingMetrics }: OverviewPageProps) {
-  return (
-    <Box>
-      <Typography variant="h4" gutterBottom fontWeight={700}>
-        Breast Cancer AI Studio
-      </Typography>
-      <Typography variant="body1" color="text.secondary" gutterBottom>
-        Explore a machine learning model trained on the Wisconsin breast cancer
-        dataset. Run single-patient predictions, batch analyses, and view
-        high-level model performance metrics.
-      </Typography>
-
-      <Grid container spacing={3} mt={1}>
-        <Grid item xs={12} md={4}>
-          <InfoCard
-            title="Single Prediction"
-            description="Enter measurements for one patient and get an instant benign vs malignant assessment with confidence."
-          />
-        </Grid>
-        <Grid item xs={12} md={4}>
-          <InfoCard
-            title="Batch Analysis"
-            description="Upload CSV files to score multiple patients at once and review predictions row by row."
-          />
-        </Grid>
-        <Grid item xs={12} md={4}>
-          <InfoCard
-            title="Model Insights"
-            description="Review metrics such as accuracy, precision, recall, and F1-score to understand overall model quality."
-          />
-        </Grid>
-      </Grid>
-
-      <Box mt={4}>
-        <Typography variant="h6" gutterBottom>
-          Quick Metrics
-        </Typography>
-        {loadingMetrics && <LinearProgress />}
-        {metrics ? (
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-            <MetricChip label="Accuracy" value={metrics.accuracy} />
-            <MetricChip label="Precision" value={metrics.precision} />
-            <MetricChip label="Recall" value={metrics.recall} />
-            <MetricChip label="F1 Score" value={metrics.f1} />
-          </Stack>
-        ) : !loadingMetrics ? (
-          <Typography variant="body2" color="text.secondary">
-            Metrics are not available yet. Ensure the Flask backend is running.
-          </Typography>
-        ) : null}
-      </Box>
-    </Box>
-  )
-}
-
-type InsightsPageProps = {
-  metrics: MetricsResponse | null
-  loading: boolean
-}
-
-function InsightsPage({ metrics, loading }: InsightsPageProps) {
-  return (
-    <Box>
-      <Typography variant="h5" gutterBottom fontWeight={600}>
-        Model Insights
-      </Typography>
-      <Typography variant="body2" color="text.secondary" gutterBottom>
-        High-level quality indicators of the trained Random Forest classifier.
-        These metrics are computed on the full dataset using the saved scaler
-        and model.
-      </Typography>
-      {loading && <LinearProgress />}
-      {metrics ? (
-        <Box mt={3}>
-          <Typography variant="subtitle1" gutterBottom>
-            Metrics
-          </Typography>
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} mb={3}>
-            <MetricChip label="Accuracy" value={metrics.accuracy} />
-            <MetricChip label="Precision" value={metrics.precision} />
-            <MetricChip label="Recall" value={metrics.recall} />
-            <MetricChip label="F1 Score" value={metrics.f1} />
-          </Stack>
-          <Typography variant="subtitle1" gutterBottom>
-            Confusion Matrix
-          </Typography>
-          {metrics.confusionMatrix && (
-            <Paper
-              variant="outlined"
-              sx={{
-                display: 'inline-block',
-                p: 2,
-                backgroundColor: '#fafafa',
-              }}
-            >
-              <table>
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>Pred 0 (Benign)</th>
-                    <th>Pred 1 (Malignant)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>True 0</td>
-                    <td>{metrics.confusionMatrix[0]?.[0]}</td>
-                    <td>{metrics.confusionMatrix[0]?.[1]}</td>
-                  </tr>
-                  <tr>
-                    <td>True 1</td>
-                    <td>{metrics.confusionMatrix[1]?.[0]}</td>
-                    <td>{metrics.confusionMatrix[1]?.[1]}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </Paper>
-          )}
         </Box>
-      ) : !loading ? (
-        <Typography variant="body2" color="text.secondary">
-          Metrics not available. Start the Flask backend and refresh.
-        </Typography>
-      ) : null}
-    </Box>
-  )
-}
-
-type InfoCardProps = {
-  title: string
-  description: string
-}
-
-function InfoCard({ title, description }: InfoCardProps) {
-  return (
-    <Paper
-      elevation={2}
-      sx={{
-        p: 2,
-        borderRadius: 3,
-        height: '100%',
-        background:
-          'linear-gradient(135deg, rgba(255,255,255,0.9), rgba(227,242,253,0.9))',
-      }}
-    >
-      <Typography variant="subtitle1" fontWeight={600} gutterBottom>
-        {title}
-      </Typography>
-      <Typography variant="body2" color="text.secondary">
-        {description}
-      </Typography>
-    </Paper>
-  )
-}
-
-type MetricChipProps = {
-  label: string
-  value: number
-}
-
-function MetricChip({ label, value }: MetricChipProps) {
-  return (
-    <Chip
-      label={`${label}: ${(value * 100).toFixed(1)}%`}
-      color="primary"
-      variant="outlined"
-    />
+        {/* Main */}
+        <Box sx={{ flex: 1, pb: { xs: 10, md: 0 }, overflow: 'hidden' }}>
+          <Box sx={{ px: { xs: 2, md: 4 }, py: 2, borderBottom: `1px solid ${borderColor}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography variant="h6" sx={{ fontWeight: 700, color: 'text.primary' }}>{NAV.find(n => n.key === page)?.label}</Typography>
+            <Stack direction="row" spacing={1}>
+              {availableModels.map(m => <Chip key={m.key} size="small" label={m.name} sx={{ bgcolor: `${MODEL_COLORS[m.key] || C.teal}15`, color: MODEL_COLORS[m.key] || C.teal, border: `1px solid ${MODEL_COLORS[m.key] || C.teal}33`, fontWeight: 600, fontSize: '0.6rem' }} />)}
+              <IconButton size="small" onClick={toggleMode} sx={{ display: { md: 'none' }, color: 'text.secondary' }}>{isDark ? <LightModeIcon fontSize="small" /> : <DarkModeIcon fontSize="small" />}</IconButton>
+            </Stack>
+          </Box>
+          <Container maxWidth="xl" sx={{ py: 3 }}>
+            <AnimatePresence mode="wait">
+              <motion.div key={page} variants={pageVariants} initial="initial" animate="animate" exit="exit">
+                {loadingMeta && page === 'overview' ? <LoadingSkeleton /> : content}
+              </motion.div>
+            </AnimatePresence>
+          </Container>
+        </Box>
+      </Box>
+      {/* Toast System */}
+      {toasts.map((t, i) => (
+        <Snackbar key={t.id} open anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }} autoHideDuration={4000} onClose={() => removeToast(t.id)}
+          sx={{ bottom: `${(i * 60) + 24}px !important` }}>
+          <Alert severity={t.severity} onClose={() => removeToast(t.id)} variant="filled" sx={{ width: '100%', borderRadius: '12px', fontWeight: 600, boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }}>{t.message}</Alert>
+        </Snackbar>
+      ))}
+      <Chatbot />
+    </ThemeProvider>
   )
 }
 
